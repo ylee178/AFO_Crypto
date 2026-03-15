@@ -22,6 +22,12 @@ def _make_signal(symbol, final_position, momentum=0.05, is_trending=True):
     )
 
 
+@pytest.fixture(autouse=True)
+def _use_tmp_db(tmp_db):
+    """All guardian tests need a DB with executions table for turnover check."""
+    pass
+
+
 class TestKillSwitchDD:
     def test_dd_below_limit_forces_cash(self):
         """Portfolio DD > -20% → all positions go to 0."""
