@@ -68,6 +68,16 @@ python check_promotion.py
 3. Fee-adjusted return ≥ 0 (실측)
 4. 백테스트 vs 페이퍼 괴리 < 5%p
 
+## Stage 3 전환 시 필수 스모크 테스트
+`testnet=True` → `testnet=False` 전환은 코드 한 줄이지만 진짜 돈이 움직인다.
+전환 전 반드시:
+1. live 키로 Binance 연결 테스트 (잔고 조회만)
+2. `--mode live --dry-run`으로 시그널 확인 (주문 안 넣음)
+3. 최소 금액($10)으로 수동 주문 1건 체결 확인
+4. `order_type=MARKET`, `status=FILLED` DB 기록 확인
+5. Slack CRITICAL이 아닌 INFO 리포트 수신 확인
+6. 이 모든 과정을 CLAUDE.md 검증 보고서 형식으로 기록
+
 ## 핵심 FIX 히스토리 (절대 되돌리지 말 것)
 - **FIX #1**: positions_json은 비중(weight) 저장. 수량이 아님.
 - **FIX #2**: paper 모드 API 키 없으면 RuntimeError. silent fallback 금지.
