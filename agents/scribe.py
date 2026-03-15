@@ -14,13 +14,20 @@ def record_decisions(
     signals: list[SignalResult],
     targets: list[PositionTarget],
     executions: list[Execution],
+    market_regime: str = "UNKNOWN",
 ):
-    """일일 의사결정을 decisions 테이블에 기록."""
+    """일일 의사결정을 decisions 테이블에 기록.
+
+    [FIX #9] market_regime을 BTC vol 기반으로 실제 분류해서 저장.
+    """
     conn = get_connection()
     target_map = {t.symbol: t for t in targets}
 
     for sig in signals:
         target = target_map.get(sig.symbol)
+
+        # confidence: vol_scalar가 extreme일수록 높은 확신
+        confidence = min(abs(sig.vol_scalar - 1.0) / 0.5, 1.0) if sig.vol_scalar > 0 else 0.0
 
         conn.execute(
             """INSERT INTO decisions
@@ -36,8 +43,8 @@ def record_decisions(
                 sig.vol_scalar,
                 sig.final_position,
                 target.delta if target else 0.0,
-                "UNKNOWN",
-                None,
+                market_regime,
+                round(confidence, 3),
             ),
         )
 

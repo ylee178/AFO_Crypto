@@ -83,8 +83,44 @@ def compute(symbols: list[str]) -> list[SignalResult]:
             final_position=final_position, reason=reason,
         ))
 
+        # [FIX #9] 계산한 feature를 DB에 persist — "계산하는 것은 전부 저장"
+        _persist_features(conn, symbol, latest_date, closes, momentum, realized_vol, vol_scalar)
+
     conn.close()
     return results
+
+
+def _persist_features(conn, symbol: str, date: str, closes, momentum_16d: float,
+                      realized_vol_45d: float, vol_scalar: float):
+    """Signal이 계산한 모든 feature를 features 테이블에 저장."""
+    # 다양한 lookback의 momentum 계산
+    mom_7d = (closes[0] / closes[7] - 1) if len(closes) > 7 else None
+    mom_14d = (closes[0] / closes[14] - 1) if len(closes) > 14 else None
+    mom_21d = (closes[0] / closes[21] - 1) if len(closes) > 21 else None
+    mom_28d = (closes[0] / closes[28] - 1) if len(closes) > 28 else None
+
+    # 20일 realized vol
+    if len(closes) >= 21:
+        price_20d = pd.Series(closes[:21][::-1])
+        ret_20d = price_20d.pct_change().dropna()
+        vol_20d = float(ret_20d.std() * np.sqrt(365))
+    else:
+        vol_20d = None
+
+    # vol ratio (20d / 45d) — regime indicator
+    vol_ratio = vol_20d / realized_vol_45d if vol_20d and realized_vol_45d > 0 else None
+
+    conn.execute(
+        """INSERT OR REPLACE INTO features
+           (symbol, date, momentum_7d, momentum_14d, momentum_16d,
+            momentum_21d, momentum_28d, realized_vol_20d, realized_vol_45d,
+            vol_scalar, vol_ratio)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (symbol, date, mom_7d, mom_14d, momentum_16d,
+         mom_21d, mom_28d, vol_20d, realized_vol_45d,
+         vol_scalar, vol_ratio),
+    )
+    conn.commit()
 
 
 # ── 백테스트용 (기존 호환) ──

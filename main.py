@@ -238,6 +238,58 @@ def compute_live_kpis() -> dict:
     }
 
 
+# ── Attribution 기록 ──
+
+def _record_daily_attribution(today, signals, targets, daily_returns, prices):
+    """[FIX #9] 일일 vol timing vs momentum filter 기여 분해."""
+    from analysis.attribution import record_attribution
+
+    try:
+        # 시장 수익률 (BTC 기준)
+        btc_return = daily_returns.get("BTC/USD", 0.0)
+
+        # 전략 총 수익률 (포지션 가중 수익률)
+        total_return = 0.0
+        vol_timing_return = 0.0
+        momentum_filter_return = 0.0
+        crash_savings = 0.0
+
+        for s in signals:
+            sym_return = daily_returns.get(s.symbol, 0.0)
+            target = next((t for t in targets if t.symbol == s.symbol), None)
+            if not target:
+                continue
+
+            weight = target.target_weight
+            total_return += weight * sym_return
+
+            if s.is_trending:
+                # Vol timing 기여: (vol_scalar - 1.0) * base_weight * return
+                # base_weight = 동일비중 (1/N)
+                base_weight = 0.5  # 2종목이므로 50%
+                vol_timing_return += (weight - base_weight) * sym_return
+            else:
+                # Momentum filter 기여: 현금이었으므로 시장 수익률을 안 먹음
+                # 수익률이 음수면 crash_savings, 양수면 기회비용
+                if sym_return < 0:
+                    crash_savings += abs(base_weight * sym_return)  # 방어한 손실
+                else:
+                    momentum_filter_return -= base_weight * sym_return  # 놓친 수익 (음수)
+
+        record_attribution(
+            date=today,
+            total_return=total_return,
+            vol_timing_return=vol_timing_return,
+            momentum_filter_return=momentum_filter_return,
+            crash_savings=crash_savings,
+            market_return=btc_return,
+        )
+        log.info(f"Attribution: total={total_return:.4f} vol_timing={vol_timing_return:.4f} "
+                 f"mom_filter={momentum_filter_return:.4f} crash_saved={crash_savings:.4f}")
+    except Exception as e:
+        log.warning(f"Attribution recording failed (non-critical): {e}")
+
+
 # ── Guardian-only 모드 ──
 
 def run_guardian():
@@ -460,7 +512,24 @@ def run_daily(mode: str = "paper", dry_run: bool = False):
 
     # 5. Scribe Agent
     log.info("Step 5: Recording...")
-    scribe.record_decisions(signals, targets, executions)
+
+    # [FIX #9] BTC vol 기반 regime 분류 — decisions에 저장
+    btc_sig = next((s for s in signals if s.symbol == "BTC/USD"), None)
+    if btc_sig and btc_sig.realized_vol > 0:
+        if btc_sig.realized_vol > 0.80:
+            market_regime = "HIGH_VOL"
+        elif btc_sig.realized_vol < 0.40:
+            market_regime = "LOW_VOL"
+        else:
+            market_regime = "MID_VOL"
+    else:
+        market_regime = "UNKNOWN"
+
+    # decisions에 regime 주입
+    for s in signals:
+        s_regime = market_regime  # 모든 종목에 BTC regime 적용 (BTC가 시장 대표)
+
+    scribe.record_decisions(signals, targets, executions, market_regime=market_regime)
     operator.save_executions(executions)
 
     # [FIX #5] 포트폴리오 스냅샷에 KPI 포함
@@ -482,6 +551,9 @@ def run_daily(mode: str = "paper", dry_run: bool = False):
         sortino=live_kpis.get("sortino"),
         fee_adj_return=None,  # 실측 수수료 기반 계산은 추후 추가
     )
+
+    # [FIX #9] Attribution — vol timing vs momentum filter 분해
+    _record_daily_attribution(today, signals, targets, daily_returns, prices)
 
     # 6. Slack 일일 리포트
     executed_trades = [ex for ex in executions if ex.status not in ("SKIPPED", "FAILED")]
