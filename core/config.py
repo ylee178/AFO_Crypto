@@ -5,6 +5,7 @@ SYMBOLS = ["BTC/USD", "ETH/USD"]
 
 # ── 전략 파라미터 (Stage 1.5 확정) ──
 FORMATION_DAYS = 16
+HOLDING_DAYS = 1               # 일일 리밸런싱 (백테스트 grid search용)
 CONFIRMATION_DAYS = 5
 VOL_LOOKBACK = 45
 VOL_TARGET = 0.08

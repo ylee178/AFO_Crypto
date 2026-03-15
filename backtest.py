@@ -11,15 +11,20 @@ import numpy as np
 from core.config import (
     SYMBOLS,
     FORMATION_DAYS, HOLDING_DAYS,
+    VOL_LOOKBACK, VOL_TARGET, MAX_VOL_SCALE,
+    MAX_SINGLE_POSITION_WEIGHT,
     FEE_ROUNDTRIP_BPS,
 )
 from core.db import init_db, get_connection
 from core.data import load_bars
 from agents.signal import compute_backtest
-from agents.guardian import check_backtest
 from agents.scribe import record_experiment
 from analysis.metrics import compute_all_kpis
 from analysis.benchmark import compare_all, format_comparison
+
+# Grid search 범위 (단일값일 경우 리스트로 변환)
+_FORMATION_GRID = FORMATION_DAYS if isinstance(FORMATION_DAYS, list) else [FORMATION_DAYS]
+_HOLDING_GRID = HOLDING_DAYS if isinstance(HOLDING_DAYS, list) else [HOLDING_DAYS]
 
 
 def run_single_backtest(
@@ -86,8 +91,24 @@ def run_single_backtest(
                         if not pd.isna(prev_close) and not pd.isna(curr_close) and prev_close > 0:
                             daily_returns[sym] = (curr_close - prev_close) / prev_close
 
-            # Guardian 체크
-            targets = check_backtest(day_signals, portfolio_value, peak_value, daily_returns)
+            # 단순 타겟 생성 (백테스트용 — 시그널 기반 비중 결정)
+            from core.models import PositionTarget
+            targets = {}
+            buy_syms = [s for s, sig in day_signals.items() if sig == "BUY"]
+            for sym, sig in day_signals.items():
+                if sig == "BUY" and buy_syms:
+                    tw = min(1.0 / len(buy_syms), MAX_SINGLE_POSITION_WEIGHT)
+                    targets[sym] = PositionTarget(
+                        symbol=sym, target_weight=tw,
+                        current_weight=0.0, delta=tw,
+                        execute=True, reason="BT_BUY",
+                    )
+                else:
+                    targets[sym] = PositionTarget(
+                        symbol=sym, target_weight=0.0,
+                        current_weight=0.0, delta=0.0,
+                        execute=False, reason="BT_CASH",
+                    )
 
             # 포지션 조정
             # 먼저 전부 청산
@@ -158,10 +179,10 @@ def run_grid_search(stage: int = 1) -> list[dict]:
 
     print(f"Data: {closes.index.min().date()} ~ {closes.index.max().date()} ({len(closes)} days)")
     print(f"Symbols: {symbols}")
-    print(f"Grid: {len(FORMATION_DAYS)} × {len(HOLDING_DAYS)} = {len(FORMATION_DAYS) * len(HOLDING_DAYS)} combinations\n")
+    print(f"Grid: {len(_FORMATION_GRID)} × {len(_HOLDING_GRID)} = {len(_FORMATION_GRID) * len(_HOLDING_GRID)} combinations\n")
 
     results = []
-    for formation, holding in product(FORMATION_DAYS, HOLDING_DAYS):
+    for formation, holding in product(_FORMATION_GRID, _HOLDING_GRID):
         print(f"  Testing formation={formation}d, holding={holding}d ... ", end="")
         result = run_single_backtest(closes, symbols, formation, holding)
         kpis = result["kpis"]

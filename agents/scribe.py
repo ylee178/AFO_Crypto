@@ -215,6 +215,65 @@ def export_daily_for_llm(path: str = "/tmp/afo_daily_result.json"):
     return path
 
 
+def get_weekly_summary() -> str:
+    """최근 7일 성과 요약 (주간 리뷰용)."""
+    conn = get_connection()
+
+    # 7일간 스냅샷
+    snapshots = conn.execute(
+        """SELECT date, total_value, drawdown_pct, btc_drawdown_pct, dd_protection,
+                  sharpe_30d, calmar, positions_json
+           FROM portfolio_snapshots ORDER BY date DESC LIMIT 7"""
+    ).fetchall()
+
+    # 7일간 거래
+    trades = conn.execute(
+        """SELECT date, symbol, action, reason, momentum_value, vol_scalar, final_position
+           FROM decisions ORDER BY id DESC LIMIT 70"""
+    ).fetchall()
+
+    # 7일간 체결
+    executions = conn.execute(
+        """SELECT symbol, side, qty, fill_price, fee_bps, status
+           FROM executions WHERE status = 'FILLED'
+           ORDER BY id DESC LIMIT 50"""
+    ).fetchall()
+
+    conn.close()
+
+    if not snapshots:
+        return json.dumps({"error": "스냅샷 없음"}, ensure_ascii=False)
+
+    # 주간 수익률
+    latest = snapshots[0]
+    oldest = snapshots[-1]
+    weekly_return = (latest[1] - oldest[1]) / oldest[1] if oldest[1] > 0 else 0.0
+
+    # 거래 집계
+    total_trades = sum(1 for e in executions if e[5] == "FILLED")
+    total_fees = sum(e[2] * e[3] * e[4] / 10000 for e in executions if e[5] == "FILLED")
+
+    result = {
+        "period": f"{oldest[0]} ~ {latest[0]}",
+        "weekly_return": f"{weekly_return:.2%}",
+        "start_value": oldest[1],
+        "end_value": latest[1],
+        "max_drawdown": min((s[2] or 0) for s in snapshots),
+        "btc_max_drawdown": min((s[3] or 0) for s in snapshots),
+        "dd_protection": latest[4],
+        "sharpe_30d": latest[5],
+        "calmar": latest[6],
+        "total_trades": total_trades,
+        "total_fees": round(total_fees, 2),
+        "daily_snapshots": [
+            {"date": s[0], "value": s[1], "drawdown": s[2]}
+            for s in reversed(snapshots)
+        ],
+    }
+
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
@@ -223,3 +282,5 @@ if __name__ == "__main__":
 
     if args.mode == "daily":
         print(get_daily_summary())
+    elif args.mode == "weekly":
+        print(get_weekly_summary())

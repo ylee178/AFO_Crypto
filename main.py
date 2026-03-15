@@ -74,32 +74,89 @@ def send_slack(message: str, severity: str = "INFO"):
 # ── 포트폴리오 상태 ──
 
 def get_portfolio_state() -> tuple[float, float, dict[str, float]]:
-    """포트폴리오 상태를 DB에서 조회.
+    """포트폴리오 상태를 DB에서 조회. 현재 가격으로 total_value를 재계산.
 
     [FIX #1] positions_json은 비중(weight)을 저장하므로 그대로 비중으로 반환.
-    이전 버그: 비중을 수량으로 해석해서 get_current_weights()에서 뻥튀기됨.
+    [FIX #8] total_value를 현재 시장 가격 기반으로 재계산.
+    이전 버그: 어제 스냅샷의 total_value를 그대로 사용 → 가격 변동 미반영 → DD 항상 0.
     """
     conn = get_connection()
     row = conn.execute(
-        "SELECT total_value, positions_json FROM portfolio_snapshots ORDER BY date DESC LIMIT 1"
+        "SELECT total_value, positions_json, cash_value FROM portfolio_snapshots ORDER BY date DESC LIMIT 1"
     ).fetchone()
 
     if row is None:
         conn.close()
         return 10000.0, 10000.0, {}
 
-    total = row[0]
-    # positions_json은 {symbol: weight} 형태로 저장됨
+    prev_total = row[0]
     positions_weights = json.loads(row[1]) if row[1] else {}
+    prev_cash = row[2] if row[2] is not None else prev_total
+
+    # [FIX #8] 현재 가격으로 포트폴리오 가치 재계산
+    # 이전 스냅샷의 비중 × 이전 total_value = 이전 시점의 종목별 달러 금액
+    # 이전 달러 금액 / 이전 가격 = 보유 수량
+    # 보유 수량 × 현재 가격 = 현재 가치
+    total = prev_cash
+    current_weights = {}
+
+    if positions_weights:
+        # 이전 가격과 현재 가격 가져오기
+        for sym, weight in positions_weights.items():
+            prev_value = weight * prev_total  # 이전 시점의 달러 가치
+
+            # 이전 가격 (스냅샷 시점)
+            prev_price_row = conn.execute(
+                """SELECT close FROM market_bars WHERE symbol = ?
+                   ORDER BY date DESC LIMIT 1 OFFSET 1""",
+                (sym,),
+            ).fetchone()
+            # 현재 가격 (최신)
+            curr_price_row = conn.execute(
+                "SELECT close FROM market_bars WHERE symbol = ? ORDER BY date DESC LIMIT 1",
+                (sym,),
+            ).fetchone()
+
+            if prev_price_row and curr_price_row and prev_price_row[0] > 0:
+                qty = prev_value / prev_price_row[0]
+                curr_value = qty * curr_price_row[0]
+                total += curr_value
+            else:
+                # 가격 데이터 없으면 이전 가치 그대로
+                total += prev_value
+
+    # 비중 재계산
+    if total > 0 and positions_weights:
+        for sym, weight in positions_weights.items():
+            prev_value = weight * prev_total
+            prev_price_row = conn.execute(
+                """SELECT close FROM market_bars WHERE symbol = ?
+                   ORDER BY date DESC LIMIT 1 OFFSET 1""",
+                (sym,),
+            ).fetchone()
+            curr_price_row = conn.execute(
+                "SELECT close FROM market_bars WHERE symbol = ? ORDER BY date DESC LIMIT 1",
+                (sym,),
+            ).fetchone()
+            if prev_price_row and curr_price_row and prev_price_row[0] > 0:
+                qty = prev_value / prev_price_row[0]
+                curr_value = qty * curr_price_row[0]
+                current_weights[sym] = curr_value / total
+            else:
+                current_weights[sym] = weight * prev_total / total
 
     peak_row = conn.execute(
         "SELECT MAX(total_value) FROM portfolio_snapshots"
     ).fetchone()
     peak = peak_row[0] if peak_row and peak_row[0] else total
+    # 현재 total이 peak를 넘으면 갱신
+    peak = max(peak, total)
 
     conn.close()
-    # [FIX #1] 비중을 그대로 반환 (수량이 아님)
-    return total, peak, positions_weights
+    logging.getLogger(__name__).info(
+        f"Portfolio: ${total:,.0f} (prev=${prev_total:,.0f}, peak=${peak:,.0f}, DD={(total-peak)/peak:.2%})"
+    )
+    return total, peak, current_weights
 
 
 def get_current_prices(symbols: list[str]) -> dict[str, float]:
