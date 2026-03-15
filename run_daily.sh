@@ -41,8 +41,8 @@ if [ -f /tmp/afo_daily_result.json ]; then
 - 승격까지 남은 일수나 조건
 
 *⏰ 다음 스케줄*
-- 다음 Crypto AFO 실행: 내일 UTC 00:05 (KST 09:05, AEDT 11:05)
-- Guardian 리스크 체크: 4시간마다 자동 (UTC 00:00, 04:00, 08:00, 12:00, 16:00, 20:00)
+- 다음 Crypto AFO 실행: 내일 오전 11:05 AEDT / 오전 9:05 KST
+- Guardian 리스크 체크: 4시간마다 자동
 - 이 메시지가 매일 오지 않으면 cron 또는 Mac 상태 확인 필요
 " 2>/dev/null | python send_insight_to_slack.py >> logs/daily.log 2>&1
 fi
